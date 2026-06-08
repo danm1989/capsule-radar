@@ -35,6 +35,7 @@ static WiFiManager           g_wm;
 static int                   g_brightnessDay = BRIGHTNESS_DEFAULT;   // user brightness (web/NVS)
 static int                   g_volume = 60;                          // alert volume 0..100 (web/NVS)
 static bool                  g_muted  = false;                       // mute alert pings
+static uint32_t              g_idleDimMs = IDLE_DIM_MS;              // dim after this idle time (0 = never)
 static volatile bool         g_onBattery = false;                    // discharging (set on core 1, read on core 0)
 static bool                  g_rtcSynced = false;                    // RTC written from NTP this session?
 static std::vector<Aircraft> g_snap;                                 // last snapshot (instant re-render on zoom)
@@ -111,6 +112,7 @@ static void loadSettings() {
     g_brightnessDay    = p.getInt("bright", BRIGHTNESS_DEFAULT);
     g_volume           = p.getInt("vol", 60);
     g_muted            = p.getBool("mute", false);
+    g_idleDimMs        = p.getUInt("idledim", IDLE_DIM_MS);
     p.end();
 }
 
@@ -218,7 +220,19 @@ static void handleRoot() {
         snprintf(o, sizeof(o), "<option value=%d%s>%s</option>", i, i == th ? " selected" : "", tnames[i]);
         topts += o;
     }
-    char buf[4000];
+    const int idleSecs[] = {10, 20, 30, 60, 120, 300};
+    const int curIdle = (int)(g_idleDimMs / 1000);
+    String iopts;
+    for (int sV : idleSecs) {
+        char lbl[16];
+        if (sV < 60) snprintf(lbl, sizeof(lbl), "%d s", sV);
+        else         snprintf(lbl, sizeof(lbl), "%d min", sV / 60);
+        char o[96];
+        snprintf(o, sizeof(o), "<option value=%d%s>%s</option>", sV, sV == curIdle ? " selected" : "", lbl);
+        iopts += o;
+    }
+    { char o[64]; snprintf(o, sizeof(o), "<option value=0%s>Never</option>", curIdle == 0 ? " selected" : ""); iopts += o; }
+    char buf[4500];
     snprintf(buf, sizeof(buf),
         "<!DOCTYPE html><html><head><meta charset=utf-8>"
         "<meta name=viewport content='width=device-width,initial-scale=1'>"
@@ -252,8 +266,10 @@ static void handleRoot() {
         "<label>Display range (km)</label><select name=range>%s</select>"
         "<label>Theme</label><select name=theme>%s</select>"
         "<button>Save &amp; restart</button></form></div>"
-        "<div class=card><div class=t>Brightness</div>"
-        "<input type=range min=5 max=255 value='%d' oninput='b(this.value,0)' onchange='b(this.value,1)'></div>"
+        "<div class=card><div class=t>Display</div>"
+        "<label>Brightness</label>"
+        "<input type=range min=5 max=255 value='%d' oninput='b(this.value,0)' onchange='b(this.value,1)'>"
+        "<label>Dim screen after</label><select onchange='d(this.value)'>%s</select></div>"
         "<div class=card><div class=t>Sound</div>"
         "<label>Volume</label>"
         "<input type=range min=0 max=100 value='%d' oninput='v(this.value,0)' onchange='v(this.value,1)'>"
@@ -266,9 +282,10 @@ static void handleRoot() {
         "<script>function b(v,s){fetch('/bright?v='+v+(s?'&save=1':''))}"
         "function v(x,s){fetch('/vol?v='+x+(s?'&save=1':''))}"
         "function m(c){fetch('/vol?mute='+(c?1:0)+'&save=1')}"
-        "function t(){fetch('/vol?test=1')}</script></body></html>",
+        "function t(){fetch('/vol?test=1')}"
+        "function d(v){fetch('/idle?v='+v+'&save=1')}</script></body></html>",
         g_settings.homeLat, g_settings.homeLon, ropts.c_str(), topts.c_str(),
-        g_brightnessDay, g_volume, g_muted ? "checked" : "");
+        g_brightnessDay, iopts.c_str(), g_volume, g_muted ? "checked" : "");
     g_web.send(200, "text/html", buf);
 }
 
@@ -323,6 +340,20 @@ static void handleVol() {
     if (g_web.hasArg("test")) {
         if (g_web.arg("test").toInt() == 2) audio_selftest();   // long tone, ignores mute
         else audio_play(AUDIO_NEW);
+    }
+    g_web.send(200, "text/plain", "ok");
+}
+
+static void handleIdle() {   // idle auto-dim timeout (seconds; 0 = never)
+    if (g_web.hasArg("v")) {
+        const long s = g_web.arg("v").toInt();
+        g_idleDimMs = (s <= 0) ? 0 : (uint32_t)s * 1000;
+        if (g_web.hasArg("save")) {
+            Preferences p;
+            p.begin("capsuleradar", false);
+            p.putUInt("idledim", g_idleDimMs);
+            p.end();
+        }
     }
     g_web.send(200, "text/plain", "ok");
 }
@@ -412,6 +443,7 @@ void setup() {
     g_web.on("/wifi", HTTP_POST, handleWifi);
     g_web.on("/bright", handleBright);
     g_web.on("/vol", handleVol);
+    g_web.on("/idle", handleIdle);
     g_web.begin();
 
     Serial.println("setup done");
@@ -479,7 +511,7 @@ void loop() {
         if (imu_facedown()) { if (fdCount < 8) fdCount++; }
         else fdCount = 0;
         const bool sleep = (fdCount >= 4);   // ~1.6 s face-down
-        const bool idle  = display::inactiveMs() > IDLE_DIM_MS;
+        const bool idle  = g_idleDimMs > 0 && display::inactiveMs() > g_idleDimMs;
         if (sleep != g_asleep || idle != g_idle) {
             g_asleep = sleep;
             g_idle = idle;
