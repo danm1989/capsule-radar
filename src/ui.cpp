@@ -82,8 +82,12 @@ static lv_obj_t *s_zoomBtn = nullptr, *s_zoomLbl = nullptr;
 
 void ui_set_range_cb(void (*cb)(float)) { s_rangeCb = cb; }
 
-static void zoom_cb(lv_event_t *e) {   // on-screen range control: reliable single tap
+static void zoom_cb(lv_event_t *e) {   // fires on PRESS (robust vs scroll-cancel on the tileview)
     (void)e;
+    static uint32_t last = 0;
+    const uint32_t now = lv_tick_get();
+    if (now - last < 250) return;      // debounce repeated/held presses
+    last = now;
     if (!s_rangeCb) return;
     const int n = (int)(sizeof(RANGE_STEPS_KM) / sizeof(RANGE_STEPS_KM[0]));
     s_rangeIdx = (s_rangeIdx + 1) % n;
@@ -376,7 +380,7 @@ void ui_create(void) {
     lv_obj_set_style_border_width(s_zoomBtn, 1, 0);
     lv_obj_set_style_border_opa(s_zoomBtn, 170, 0);
     lv_obj_clear_flag(s_zoomBtn, LV_OBJ_FLAG_SCROLL_CHAIN);  // tapping it must not swipe the tileview
-    lv_obj_add_event_cb(s_zoomBtn, zoom_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(s_zoomBtn, zoom_cb, LV_EVENT_PRESSED, NULL);  // fire on touch-down, not release
     s_zoomLbl = lv_label_create(s_zoomBtn);
     lv_label_set_text(s_zoomLbl, LV_SYMBOL_LOOP " 30 km");
     lv_obj_set_style_text_font(s_zoomLbl, &lv_font_montserrat_14, 0);
