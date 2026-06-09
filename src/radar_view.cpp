@@ -6,6 +6,7 @@
 #include "radar_view.h"
 #include "config.h"
 #include "geo.h"
+#include "coastline.h"
 #include <lvgl.h>
 #include <math.h>
 #include <stdio.h>
@@ -195,9 +196,13 @@ static void grid_draw_cb(lv_event_t *e) {
         td.border_color = lv_color_hex(0x8A4A00);
         td.border_width = 1;
         td.border_opa = 160;
+        coastline_draw(d, DRG_GRID, 150);          // landmass outline under the triangle
         lv_draw_polygon(d, &td, tri, 3);
         return;
     }
+
+    // coastline first, so the rings/crosshair sit cleanly on top of it
+    coastline_draw(d, s_cRing, 95);
 
     // phosphor: concentric rings + crosshair
     lv_draw_arc_dsc_t ad;
@@ -649,6 +654,15 @@ void update(const std::vector<Aircraft> &aircraft, const RadarSettings &s) {
     out.reserve(aircraft.size());
     std::set<std::string> present;
     const float R = (float)RADAR_R_OUTER_PX;
+
+    // Reproject the coastline only when the scope geometry actually changes (home
+    // moved or range zoomed) — never per frame. Then repaint the static chrome layer.
+    static double s_coLat = 1e9, s_coLon = 1e9; static float s_coRange = -1.0f;
+    if (s.homeLat != s_coLat || s.homeLon != s_coLon || s.rangeKm != s_coRange) {
+        s_coLat = s.homeLat; s_coLon = s.homeLon; s_coRange = s.rangeKm;
+        coastline_project(s.homeLat, s.homeLon, s.rangeKm, s_cx, s_cy, R);
+        if (s_gridLayer) lv_obj_invalidate(s_gridLayer);
+    }
 
     std::map<std::string, lv_point_t> prevPos;        // smooth-motion: glide starts here
     for (const AcDraw &a : s_acs) prevPos[a.hex] = a.pos;
