@@ -44,8 +44,8 @@ bool AdsbClient::poll(std::vector<Aircraft>& out) {
 
     HTTPClient http;
     http.setReuse(false);
-    http.setConnectTimeout(10000);   // tolerate slow / high-latency links (mobile hotspot)
-    http.setTimeout(15000);
+    http.setConnectTimeout(6000);    // fail reasonably fast: a slow host must not block the
+    http.setTimeout(8000);           // task (and the user's route/photo lookups) for too long
     if (!http.begin(client, url)) { Serial.printf("[adsb] begin failed (%s)\n", host); _useFallback = !_useFallback; return false; }
     http.addHeader("User-Agent", ADSB_USER_AGENT);
     http.addHeader("Accept", "application/json");
