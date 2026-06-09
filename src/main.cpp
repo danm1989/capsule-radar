@@ -133,13 +133,6 @@ static void loadSettings() {
     p.end();
 }
 
-// Best-effort military detection by ICAO hex prefix ("AE" = US military; extend as needed).
-static bool isMilitaryHex(const char *hex) {
-    if (!hex || !hex[0] || !hex[1]) return false;
-    const char a = hex[0] | 0x20, b = hex[1] | 0x20;
-    return a == 'a' && b == 'e';
-}
-
 // Ping when a new aircraft enters range (rate-limited) or for emergency/military (always).
 static void checkAudioEvents() {
     if (!audio_present()) return;
@@ -153,7 +146,7 @@ static void checkAudioEvents() {
         const std::string hex = ac.hex.c_str();
         now.insert(hex);
         if (first || seen.count(hex)) continue;               // not new
-        if (acIsEmergency(ac.squawk) || isMilitaryHex(ac.hex.c_str())) {
+        if (acIsEmergency(ac.squawk) || ac.military) {   // military flag comes from the feed (dbFlags)
             audio_play(AUDIO_ALERT);                          // urgent: always
         } else if (millis() - lastNew > 3000) {
             audio_play(AUDIO_NEW);                            // new contact: rate-limited
@@ -322,8 +315,15 @@ static void handleRoot() {
 static void handleSave() {
     Preferences p;
     p.begin("capsuleradar", false);
-    if (g_web.hasArg("lat"))   p.putDouble("homeLat", g_web.arg("lat").toDouble());
-    if (g_web.hasArg("lon"))   p.putDouble("homeLon", g_web.arg("lon").toDouble());
+    // Reject out-of-range coordinates so a typo can't leave the radar unusable.
+    if (g_web.hasArg("lat")) {
+        const double lat = g_web.arg("lat").toDouble();
+        if (lat >= -90.0 && lat <= 90.0) p.putDouble("homeLat", lat);
+    }
+    if (g_web.hasArg("lon")) {
+        const double lon = g_web.arg("lon").toDouble();
+        if (lon >= -180.0 && lon <= 180.0) p.putDouble("homeLon", lon);
+    }
     if (g_web.hasArg("range")) p.putFloat("rangeKm", g_web.arg("range").toFloat());
     if (g_web.hasArg("theme")) p.putInt("theme", g_web.arg("theme").toInt());
     p.end();
@@ -565,6 +565,7 @@ void loop() {
     static uint32_t lastStatus = 0;
     if (millis() - lastStatus > 5000) {
         lastStatus = millis();
+#if DEBUG_MEM
         static uint32_t lastFrames = 0;
         const uint32_t fr = display_frames();
         const unsigned fps = (fr - lastFrames) / 5;
@@ -574,6 +575,7 @@ void loop() {
                       (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
                       (unsigned)ESP.getFreePsram(), (unsigned long)(millis() / 1000),
                       (int)g_snap.size(), fps);
+#endif
         char clk[8] = "--:--";
         struct tm ti;
         const bool haveTime = getLocalTime(&ti, 0);

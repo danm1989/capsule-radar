@@ -39,6 +39,9 @@ static const float RANGE_STEPS_KM[] = {10.0f, 20.0f, 30.0f, 50.0f, 100.0f};
 #define ADSB_HTTPS_INSECURE 1               // 1 = setInsecure() (hobby). 0 = use pinned root CA.
 #define ADSB_MAX_AIRCRAFT   60              // hard cap parsed per poll (protect RAM in busy areas)
 
+// ---------- Debug ----------
+#define DEBUG_MEM           0               // 1 = print a [mem] heap/fps line every 5s on serial
+
 // ---------- Pin map ----------
 // VERIFIED (ESPHome def, cross-checked against the Waveshare board definition in
 // xiaozhi-esp32 and a working Arduino_GFX port for this exact panel):
