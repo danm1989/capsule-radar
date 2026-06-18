@@ -15,6 +15,7 @@
 #include "ui.h"
 #include "display.h"                  // M0: CO5300 + LVGL bring-up
 #include "imu_qmi8658.h"             // face-down sleep
+#include "gps.h"                     // LC76G GNSS (-G variant only)
 #include "battery.h"                 // AXP2101 battery gauge
 #include "rtc_pcf85063.h"            // PCF85063 RTC (offline clock + date)
 #include "audio.h"                   // ES8311 alert pings
@@ -46,6 +47,7 @@ static bool                  g_showSweep = true;                     // rotating
 static int                   g_units = 0;                            // 0=Aviation 1=Metric 2=Imperial (web/NVS)
 static bool                  g_showAirports = true;                  // airport markers on/off (web/NVS)
 static int                   g_rotation = 0;                         // display rotation 0/1/2/3 = 0/90/180/270 (web/NVS)
+static bool                  g_useGps = false;                       // auto-set home from the LC76G GPS (-G variant) (web/NVS)
 static volatile bool         g_onBattery = false;                    // discharging (set on core 1, read on core 0)
 static bool                  g_rtcSynced = false;                    // RTC written from NTP this session?
 static std::vector<Aircraft> g_snap;                                 // last snapshot (instant re-render on zoom)
@@ -146,6 +148,7 @@ static void loadSettings() {
     g_muted            = p.getBool("mute", false);
     g_alertMode        = p.getInt("alertmode", 2);
     g_proximityKm      = p.getFloat("proxkm", 0.0f);
+    g_useGps           = p.getBool("usegps", false);
     g_idleDimMs        = p.getUInt("idledim", IDLE_DIM_MS);
     g_units            = p.getInt("units", 0);
     p.end();
@@ -308,6 +311,12 @@ static void handleRoot() {
         snprintf(o, sizeof(o), "<option value=%.3f%s>%s</option>", pkm, sel ? " selected" : "", lbl);
         popts += o;
     }
+    String gpsRow;   // only on the -G variant: offer to auto-set the centre from GPS
+    if (gps_present()) {
+        gpsRow  = "<label><input type=checkbox class=ck ";
+        gpsRow += g_useGps ? "checked" : "";
+        gpsRow += " onchange='gp(this.checked)'>Use GPS for location</label>";
+    }
     static char buf[8200];   // static (not on the 8 KB loop-task stack) to avoid overflow
     snprintf(buf, sizeof(buf),
         "<!DOCTYPE html><html><head><meta charset=utf-8>"
@@ -345,6 +354,7 @@ static void handleRoot() {
         "<div id=map></div>"
         "<label>Center latitude</label><input id=lat name=lat value='%.5f'>"
         "<label>Center longitude</label><input id=lon name=lon value='%.5f'>"
+        "%s"
         "<label>Display range</label><select name=range>%s</select>"
         "<label>Theme</label><select name=theme>%s</select>"
         "<button>Save &amp; restart</button></form></div>"
@@ -385,8 +395,9 @@ static void handleRoot() {
         "function ro(v){fetch('/rotate?v='+v+'&save=1')}"
         "function u(v){fetch('/units?v='+v+'&save=1')}"
         "function al(v){fetch('/alerts?mode='+v+'&save=1')}"
-        "function px(v){fetch('/alerts?prox='+v+'&save=1')}</script></body></html>",
-        g_settings.homeLat, g_settings.homeLon, ropts.c_str(), topts.c_str(),
+        "function px(v){fetch('/alerts?prox='+v+'&save=1')}"
+        "function gp(c){fetch('/gps?v='+(c?1:0)+'&save=1')}</script></body></html>",
+        g_settings.homeLat, g_settings.homeLon, gpsRow.c_str(), ropts.c_str(), topts.c_str(),
         g_brightnessDay, iopts.c_str(), g_showSweep ? "checked" : "",
         g_showAirports ? "checked" : "", rotopts.c_str(), uopts.c_str(),
         g_volume, g_muted ? "checked" : "", aopts.c_str(), popts.c_str(),
@@ -541,6 +552,19 @@ static void handleRotate() {   // display rotation 0/90/180/270 for any USB-C or
     g_web.send(200, "text/plain", "ok");
 }
 
+static void handleGps() {   // auto-set the centre point from the LC76G GPS (-G variant)
+    if (g_web.hasArg("v")) {
+        g_useGps = g_web.arg("v").toInt() != 0;
+        if (g_web.hasArg("save")) {
+            Preferences p;
+            p.begin("capsuleradar", false);
+            p.putBool("usegps", g_useGps);
+            p.end();
+        }
+    }
+    g_web.send(200, "text/plain", "ok");
+}
+
 // ---- browser OTA: upload an app .bin over WiFi and self-flash ----
 static void handleUpdatePage() {
     g_web.send(200, "text/html",
@@ -627,6 +651,7 @@ void setup() {
 
     imu_begin();       // face-down sleep (no-op if the IMU isn't detected)
     battery_begin();   // AXP2101 (no-op if not detected / no battery)
+    gps_begin();       // LC76G GNSS (no-op if not the -G variant)
     battery_enable_codec_rail();   // power the ES8311 analog rail before audio init
 
     setenv("TZ", TZ_STR, 1); tzset();   // local time for display even before NTP
@@ -690,6 +715,7 @@ void setup() {
     g_web.on("/sweep", handleSweep);
     g_web.on("/airports", handleAirports);
     g_web.on("/rotate", handleRotate);
+    g_web.on("/gps", handleGps);
     g_web.on("/units", handleUnits);
     g_web.on("/update", HTTP_GET, handleUpdatePage);
     g_web.on("/update", HTTP_POST,
@@ -709,6 +735,7 @@ void loop() {
     display::loop();                // drive LVGL (render dirty areas + run timers)
     g_wm.process();                 // service the WiFi config portal (non-blocking)
     g_web.handleClient();           // serve the configuration web page
+    gps_poll();                     // pull NMEA from the LC76G (no-op without the -G variant)
 
     // scheduled reboot after a fresh WiFi config (see setSaveConfigCallback)
     if (g_rebootAtMs && (int32_t)(millis() - g_rebootAtMs) >= 0) { delay(50); ESP.restart(); }
@@ -782,6 +809,16 @@ void loop() {
             struct tm utc;
             gmtime_r(&now, &utc);
             if (rtc_write(&utc)) { g_rtcSynced = true; Serial.println("[rtc] saved NTP time"); }
+        }
+        // GPS auto-location (-G variant): re-centre the radar when the fix moves enough.
+        if (g_useGps) {
+            double glat, glon;
+            if (gps_location(&glat, &glon) &&
+                geo::haversineKm(g_settings.homeLat, g_settings.homeLon, glat, glon) > 1.0) {
+                g_settings.homeLat = glat; g_settings.homeLon = glon;   // radar/coastline recenter
+                g_requery = true;                                       // adsb_task re-queries the new area
+                Serial.printf("[gps] re-centred to %.4f, %.4f\n", glat, glon);
+            }
         }
     }
 
