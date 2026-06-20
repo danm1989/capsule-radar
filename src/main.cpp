@@ -762,7 +762,7 @@ void loop() {
     display::loop();                // drive LVGL (render dirty areas + run timers)
     g_wm.process();                 // service the WiFi config portal (non-blocking)
     g_web.handleClient();           // serve the configuration web page
-    gps_poll();                     // pull NMEA from the LC76G (no-op without the -G variant)
+    if (g_useGps) gps_poll();       // pull NMEA from the LC76G (only when GPS auto-location is on)
 
     // scheduled reboot after a fresh WiFi config (see setSaveConfigCallback)
     if (g_rebootAtMs && (int32_t)(millis() - g_rebootAtMs) >= 0) { delay(50); ESP.restart(); }
