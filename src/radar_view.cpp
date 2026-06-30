@@ -82,6 +82,7 @@ static lv_obj_t  *s_rangeLbl  = nullptr;
 static bool       s_rangeLblVisible = true;
 static bool       s_sweepEnabled    = true;
 static bool       s_airportsEnabled = true;
+static int        s_maxOnScreen     = 20;          // how many (nearest) aircraft to draw (web-configurable)
 static int        s_trailMax        = TRAIL_MAX;   // per-aircraft trail length (0 = off)
 static int        s_flowMax         = FLOW_MAX;    // persistent flow-layer segments, count cap (0 = off)
 static int        s_flowGenMax      = 14;          // ...and an age cap in polls (~2 s each) so tracks fade out
@@ -618,6 +619,11 @@ void setTrailLength(int level) {
     if (s_acLayer) lv_obj_invalidate(s_acLayer);
 }
 
+void setMaxOnScreen(int n) {
+    s_maxOnScreen = (n < 1) ? 1 : (n > ADSB_MAX_AIRCRAFT ? ADSB_MAX_AIRCRAFT : n);  // never more than the feed pulls
+    if (s_acLayer) lv_obj_invalidate(s_acLayer);
+}
+
 void init(void *lv_parent) {
     lv_obj_t *parent = (lv_obj_t *)lv_parent;
     s_parent = parent;
@@ -808,10 +814,10 @@ void update(const std::vector<Aircraft> &aircraft, const RadarSettings &s) {
         if (pruned) flow_redraw_all();
     }
 
-    // nearest first (the blips + the list); cap to keep work bounded
+    // nearest first (the blips + the list); cap to keep work bounded (web-configurable)
     std::sort(out.begin(), out.end(),
               [](const AcDraw &a, const AcDraw &b) { return a.distKm < b.distKm; });
-    if (out.size() > 20) out.resize(20);
+    if ((int)out.size() > s_maxOnScreen) out.resize(s_maxOnScreen);
 
     if (++s_flowRedrawCtr >= FLOW_REDRAW_EVERY) {
         s_flowRedrawCtr = 0;
