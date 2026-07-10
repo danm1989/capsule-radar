@@ -29,6 +29,7 @@
 #include <ArduinoOTA.h>             // OTA firmware update over WiFi (PlatformIO/espota)
 #include <Update.h>                 // browser OTA: self-flash an uploaded .bin
 #include <esp_heap_caps.h>          // largest-free-block metric (heap health)
+#include <esp_wifi.h>               // esp_wifi_restore() (WiFi reset must survive the reboot)
 
 // ---- shared state ----
 static std::vector<Aircraft> g_aircraft;      // latest snapshot
@@ -530,9 +531,12 @@ static void handleWifi() {
     g_web.send(200, "text/html",
         "<body style='background:#06100a;color:#ffb23c;font-family:sans-serif;padding:24px'>"
         "WiFi reset. Connect to the <b>CapsuleRadar-Setup</b> network to reconfigure.</body>");
-    delay(400);
-    g_wm.resetSettings();
-    ESP.restart();
+    delay(400);                    // let the response reach the browser
+    g_wm.resetSettings();          // WiFiManager-level erase...
+    WiFi.disconnect(true, true);   // ...belt & braces: driver-level erase of the stored AP
+    esp_wifi_restore();            // ...and factory-reset the WiFi config in NVS
+    delay(600);                    // give NVS time to commit BEFORE rebooting (else creds survive
+    ESP.restart();                 //   and the device just reconnects — seen on Arduino core 3.x)
 }
 
 static void handleBright() {
