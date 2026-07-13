@@ -101,17 +101,35 @@ void gps_poll() {
     last = now;
 
     Wire.setClock(GPS_I2C_HZ); Wire.setTimeOut(GPS_TIMEOUT_MS);   // LC76G read path: 100 kHz + tolerate clock-stretch
-    gps_drain();
+    int drained = gps_drain();                                    // actual bytes drained when polling (0 if nothing queued or a step failed)
     Wire.setTimeOut(BUS_TIMEOUT_MS); Wire.setClock(GPS_BUS_HZ);   // hand the shared bus back to touch/IMU/RTC/PMIC
 
     // Diagnostic ladder (every ~8 s): chars=0 -> no NMEA arriving; sent>0 but fix=0 -> valid
     // data, just no satellite lock yet (needs clear sky / a few min on a cold start).
     static uint32_t lg = 0;
     if (now - lg > 8000) { lg = now;
-        Serial.printf("[gps] chars=%lu sent=%lu csErr=%lu sats=%d fix=%d\n",
-                      (unsigned long)s_gps.charsProcessed(), (unsigned long)s_gps.sentencesWithFix(),
-                      (unsigned long)s_gps.failedChecksum(), (int)s_gps.satellites.value(),
-                      (int)gps_has_fix());
+        double lat = 0.0, lon = 0.0;
+        bool haveFix = gps_location(&lat, &lon);
+        if (haveFix) {
+            Serial.printf("[gps] drain=%d chars=%lu sent=%lu csErr=%lu sats=%d fix=%d\n"
+                          " lat=%.6f lon=%.6f\n",
+                          drained,
+                          (unsigned long)s_gps.charsProcessed(),
+                          (unsigned long)s_gps.sentencesWithFix(),
+                          (unsigned long)s_gps.failedChecksum(),
+                          (int)s_gps.satellites.value(),
+                          (int)gps_has_fix(),
+                          lat, lon);
+        } else {
+            Serial.printf("[gps] drain=%d chars=%lu sent=%lu csErr=%lu sats=%d fix=%d\n"
+                          " lat=N/A lon=N/A\n",
+                          drained,
+                          (unsigned long)s_gps.charsProcessed(),
+                          (unsigned long)s_gps.sentencesWithFix(),
+                          (unsigned long)s_gps.failedChecksum(),
+                          (int)s_gps.satellites.value(),
+                          (int)gps_has_fix());
+        }
     }
 }
 
