@@ -5,10 +5,10 @@
 // Edit pins below: replace every -1 with the value from the Waveshare factory demo
 // (see docs/HARDWARE.md and docs/SETUP.md). Do NOT guess them.
 
-// ---------- Home location (default: Dénia, Spain) ----------
+// ---------- Home location (default: Greenwich, London) ----------
 // Overridable at runtime via the captive portal (stored in NVS).
-#define HOME_LAT_DEFAULT   38.8409
-#define HOME_LON_DEFAULT    0.1059
+#define HOME_LAT_DEFAULT   51.4761
+#define HOME_LON_DEFAULT    0.0000
 
 // ---------- Radar ----------
 #define RANGE_KM_DEFAULT    30.0f          // display range (outer ring). Query is wider, see ADSB_QUERY_KM
