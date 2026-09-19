@@ -24,18 +24,39 @@ struct PsramJsonAllocator : ArduinoJson::Allocator {
 };
 static PsramJsonAllocator s_jsonPsram;
 
+// NetworkClient::readBytes() treats a transient negative TLS read as end-of-input,
+// which makes ArduinoJson intermittently report IncompleteInput. Deliberately wrap
+// the client without overriding readBytes(): Stream's timed byte reader retries
+// temporary no-data reads until the configured timeout.
+class ReliableJsonStream : public Stream {
+public:
+    explicit ReliableJsonStream(Stream& source) : _source(source) {}
+    int available() override { return _source.available(); }
+    int read() override {
+        const int value = _source.read();
+        if (value >= 0) ++_bytesRead;
+        return value;
+    }
+    int peek() override { return _source.peek(); }
+    void flush() override { _source.flush(); }
+    size_t write(uint8_t) override { return 0; }
+    size_t bytesRead() const { return _bytesRead; }
+
+private:
+    Stream& _source;
+    size_t _bytesRead = 0;
+};
+
 void AdsbClient::begin(double homeLat, double homeLon, float rangeKm) {
     _lat = homeLat; _lon = homeLon; _rangeKm = rangeKm;
 }
 
 bool AdsbClient::poll(std::vector<Aircraft>& out) {
     if (WiFi.status() != WL_CONNECTED) return false;
-    // Prefer the primary host, and give it a quick second try before touching the fallback:
-    // the primary is reliable in practice, while the fallback can be slow to time out from
-    // some networks (turning one transient primary blip into a long no-data gap + amber HUD).
+    // Try each independent provider once. Retrying the primary immediately can violate its
+    // one-request-per-second limit and adds another full timeout to an already slow failure.
     if (fetchFrom(ADSB_PRIMARY_HOST, out)) return true;
-    if (fetchFrom(ADSB_PRIMARY_HOST, out)) return true;   // transient blip -> retry the healthy host
-    return fetchFrom(ADSB_FALLBACK_HOST, out);            // last resort
+    return fetchFrom(ADSB_FALLBACK_HOST, out);
 }
 
 bool AdsbClient::fetchFrom(const char* host, std::vector<Aircraft>& out) {
@@ -59,7 +80,16 @@ bool AdsbClient::fetchFrom(const char* host, std::vector<Aircraft>& out) {
     http.addHeader("Accept", "application/json");
 
     const int code = http.GET();
-    if (code != 200) { Serial.printf("[adsb] HTTP %d (%s)\n", code, host); http.end(); return false; }
+    if (code != 200) {
+        char tls[128] = "";
+        const int tlsCode = client.lastError(tls, sizeof(tls));
+        Serial.printf("[adsb] HTTP %d (%s) tls=%d '%s' heap=%u largest=%u psram=%u\n",
+                      code, host, tlsCode, tls,
+                      (unsigned)ESP.getFreeHeap(),
+                      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                      (unsigned)ESP.getFreePsram());
+        http.end(); return false;
+    }
 
     // Only keep the fields we use -> much smaller parsed document.
     JsonDocument filter(&s_jsonPsram);
@@ -72,10 +102,19 @@ bool AdsbClient::fetchFrom(const char* host, std::vector<Aircraft>& out) {
             filter[k][0][f] = true;
 
     JsonDocument doc(&s_jsonPsram);
-    DeserializationError err = deserializeJson(doc, http.getStream(),
+    const int expectedBytes = http.getSize();
+    NetworkClient& responseStream = http.getStream();
+    ReliableJsonStream jsonStream(responseStream);
+    DeserializationError err = deserializeJson(doc, jsonStream,
                                                DeserializationOption::Filter(filter));
+    if (err) {
+        Serial.printf("[adsb] JSON parse failed (%s): %s; expected=%d read=%u available=%d connected=%d\n",
+                      host, err.c_str(), expectedBytes, (unsigned)jsonStream.bytesRead(),
+                      responseStream.available(), responseStream.connected());
+        http.end();
+        return false;
+    }
     http.end();
-    if (err) return false;
 
     JsonArrayConst arr = doc["ac"].as<JsonArrayConst>();
     if (arr.isNull()) arr = doc["aircraft"].as<JsonArrayConst>();
